@@ -2,6 +2,8 @@
 //        @author: Gordon Martinez-Piedra '23
 // ========================================================= //                  
 
+// const { ethers } = require("hardhat");
+
 // Set up Ethers.js
 const provider = new ethers.providers.JsonRpcProvider("http://localhost:8545");
 var defaultAccount;
@@ -11,8 +13,9 @@ const exchange_name = 'Hello NT Liinhh ne';
 const token_name = 'NtlDex';                
 const token_symbol = 'NTL';             
 
+const exchange_rate_multiplier = 100000;
 
-const token_address = '0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6';      
+const token_address = '0x5FbDB2315678afecb367f032d93F642f64180aa3';      
 const token_abi = [
   {
     "inputs": [],
@@ -364,7 +367,7 @@ const token_abi = [
 ];             
 const token_contract = new ethers.Contract(token_address, token_abi, provider.getSigner());
 
-const exchange_address = '0x8A791620dd6260079BF849Dc5567aDC3F2FdC318';
+const exchange_address = '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512';
 const exchange_abi = [
   {
     "inputs": [],
@@ -391,7 +394,18 @@ const exchange_abi = [
     "type": "event"
   },
   {
-    "inputs": [],
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "max_exchange_rate",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "min_exchange_rate",
+        "type": "uint256"
+      }
+    ],
     "name": "addLiquidity",
     "outputs": [],
     "stateMutability": "payable",
@@ -473,7 +487,18 @@ const exchange_abi = [
     "type": "function"
   },
   {
-    "inputs": [],
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "max_exchange_rate",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "min_exchange_rate",
+        "type": "uint256"
+      }
+    ],
     "name": "removeAllLiquidity",
     "outputs": [],
     "stateMutability": "payable",
@@ -484,6 +509,16 @@ const exchange_abi = [
       {
         "internalType": "uint256",
         "name": "amountETH",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "max_exchange_rate",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "min_exchange_rate",
         "type": "uint256"
       }
     ],
@@ -500,7 +535,13 @@ const exchange_abi = [
     "type": "function"
   },
   {
-    "inputs": [],
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "max_exchange_rate",
+        "type": "uint256"
+      }
+    ],
     "name": "swapETHForTokens",
     "outputs": [],
     "stateMutability": "payable",
@@ -511,6 +552,11 @@ const exchange_abi = [
       {
         "internalType": "uint256",
         "name": "amountTokens",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "max_exchange_rate",
         "type": "uint256"
       }
     ],
@@ -605,25 +651,94 @@ async function getPoolState() {
 
 /*** ADD LIQUIDITY ***/
 async function addLiquidity(amountEth, maxSlippagePct) {
-    /** TODO: ADD YOUR CODE HERE **/
+    try {
+      // Calculate amount of token to keep rate
+      const poolState = await getPoolState();
+      const amountTokens = Math.floor(poolState.token_eth_rate * amountEth);
+
+      // approve token transfer before add liquidity
+      await token_contract.connect(provider.getSigner(defaultAccount)).approve(exchange_address, amountTokens);
+
+      // calculate max rate, min rate
+      const max_exchange_rate = Math.floor(poolState.token_eth_rate * exchange_rate_multiplier * (100 + maxSlippagePct) / 100);
+      const min_exchange_rate = Math.floor(poolState.token_eth_rate * exchange_rate_multiplier * (100 - maxSlippagePct) / 100);
+
+      await exchange_contract.connect(provider.getSigner(defaultAccount)).addLiquidity(max_exchange_rate, min_exchange_rate, {value: ethers.utils.parseEther(amountEth.toString())});
+      console.log ("Add liquidity successfully");
+    }
+    catch (err) {
+      console.error("Error when adding liquidity: ", err);
+    }
 }
 
 /*** REMOVE LIQUIDITY ***/
 async function removeLiquidity(amountEth, maxSlippagePct) {
-    /** TODO: ADD YOUR CODE HERE **/
+    try {
+       // calculate max rate, min rate
+       const poolState = await getPoolState();
+       const max_exchange_rate = Math.floor(
+        poolState.token_eth_rate * exchange_rate_multiplier * (100 + maxSlippagePct) / 100
+      );
+      const min_exchange_rate = Math.floor(
+        poolState.token_eth_rate * exchange_rate_multiplier * (100 - maxSlippagePct) / 100
+      );
+      await exchange_contract.connect(provider.getSigner(defaultAccount)).removeLiquidity(ethers.utils.parseEther(amountEth.toString()), max_exchange_rate, min_exchange_rate);
+      console.log("Remove liquidity successfully");
+    }
+    catch (err) {
+      console.error("Error when removing liquidity: ", err);
+    }
 }
 
 async function removeAllLiquidity(maxSlippagePct) {
-    /** TODO: ADD YOUR CODE HERE **/
+    try {
+       // calculate max rate, min rate
+       const poolState = await getPoolState();
+       const max_exchange_rate = Math.floor(
+        poolState.eth_token_rate * exchange_rate_multiplier * (100 + maxSlippagePct) / 100
+      );
+      const min_exchange_rate = Math.floor(
+        poolState.token_eth_rate * exchange_rate_multiplier * (100 - maxSlippagePct) / 100
+      );
+      await exchange_contract.connect(provider.getSigner(defaultAccount)).removeAllLiquidity(max_exchange_rate, min_exchange_rate);
+      console.log("Remove all liquidity successfully");
+    }
+    catch (err) {
+      console.error("Error when removing all liquidity: ", err);
+    }
 }
 
 /*** SWAP ***/
 async function swapTokensForETH(amountToken, maxSlippagePct) {
-    /** TODO: ADD YOUR CODE HERE **/
+    try {
+      await token_contract.connect(provider.getSigner(defaultAccount)).approve(exchange_address, amountToken);
+      
+      const poolState = await getPoolState();
+      const max_exchange_rate = Math.floor(
+        poolState.token_eth_rate * exchange_rate_multiplier * (100 + maxSlippagePct) / 100
+      );
+
+      await exchange_contract.connect(provider.getSigner(defaultAccount)).swapTokensForETH(amountToken, max_exchange_rate);
+      console.log("Swap tokens for ETH successfully");
+    }
+    catch (err) {
+      console.error("Error when swapping tokens for ETH: ", err);
+    }
 }
 
 async function swapETHForTokens(amountEth, maxSlippagePct) {
-    /** TODO: ADD YOUR CODE HERE **/
+  try {
+    const poolState = await getPoolState();
+    const max_exchange_rate = Math.floor(
+      poolState.token_eth_rate * exchange_rate_multiplier * (100 + maxSlippagePct) / 100
+    );
+
+    await exchange_contract.connect(provider.getSigner(defaultAccount)).swapETHForTokens(max_exchange_rate,
+      {value: ethers.utils.parseEther(amountEth.toString())});
+    console.log("Swap ETH for Tokens successfully");
+  } catch (err) {
+      console.error("Error when swapping ETH for Tokens: ", err);
+  }
 }
 
 // =============================================================================
@@ -803,18 +918,21 @@ const sanityCheck = async function() {
       await swapETHForTokens("100", "1");
       var state1 = await getPoolState();
       var expected_tokens_received = 100 * (1 - swap_fee) * start_state.token_eth_rate;
+
       var user_tokens1 = await token_contract.connect(provider.getSigner(defaultAccount)).balanceOf(defaultAccount);
+      
       score += check("Testing simple exchange of ETH to token", swap_fee[0], 
         Math.abs((start_state.token_liquidity - expected_tokens_received) - state1.token_liquidity) < 5 &&
-        (state1.eth_liquidity - start_state.eth_liquidity) === 100 &&
+        (state1.eth_liquidity - start_state.eth_liquidity + 100 * swap_fee) === 100 &&
         Math.abs(Number(start_tokens) + expected_tokens_received - Number(user_tokens1)) < 5);
-      
+   
       await swapTokensForETH("90", "1");
       var state2 = await getPoolState();
       var expected_eth_received = 90 * (1 - swap_fee) * state1.eth_token_rate;
       var user_tokens2 = await token_contract.connect(provider.getSigner(defaultAccount)).balanceOf(defaultAccount);
+
       score += check("Test simple exchange of token to ETH", swap_fee[0], 
-        state2.token_liquidity === (state1.token_liquidity + 90) && 
+        state2.token_liquidity === (state1.token_liquidity + 90 - Math.floor(90 * swap_fee)) && 
         Math.abs((state1.eth_liquidity - expected_eth_received) - state2.eth_liquidity) < 5 &&
         Number(user_tokens2) === (Number(user_tokens1) - 90));
 
@@ -830,7 +948,6 @@ const sanityCheck = async function() {
         state3.eth_liquidity === (state2.eth_liquidity + 100) &&
         Math.abs(state3.token_liquidity - (state2.token_liquidity + expected_tokens_added)) < 5 &&
         Math.abs(Number(user_tokens3) - (Number(user_tokens2) - expected_tokens_added)) < 5);
-      
 
       // accumulate some lp rewards
       for (var i = 0; i < 20; i++) {

@@ -9,7 +9,7 @@ import "hardhat/console.sol";
 contract TokenExchange is Ownable {
     string public exchange_name = 'Hello NT Liinhh ne';
 
-    address tokenAddr = 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512;
+    address tokenAddr = 0x5FbDB2315678afecb367f032d93F642f64180aa3;
     Token public token = Token(tokenAddr);                                
 
     // Liquidity pool for the exchange
@@ -100,7 +100,7 @@ contract TokenExchange is Ownable {
 
     // Function addLiquidity: Adds liquidity given a supply of ETH (sent to the contract as msg.value).
     // You can change the inputs, or the scope of your function, as needed.
-    function addLiquidity() 
+    function addLiquidity(uint max_exchange_rate, uint min_exchange_rate) 
     external 
     payable
     {
@@ -110,15 +110,19 @@ contract TokenExchange is Ownable {
         uint totalEth = msg.sender.balance;
         require(msg.value < totalEth, "Insufficient ETH balance");
 
+        // Calculate the current exchange rate (tokens per ETH)
+        uint currentExchangeRate = (token_reserves * multiplier * 10**18) / eth_reserves ;
+
+        // Ensure the current exchange rate is within the allowed range
+        require(currentExchangeRate <= max_exchange_rate, "Exchange rate exceeds the maximum allowed");
+        require(currentExchangeRate >= min_exchange_rate, "Exchange rate is below the minimum allowed");
+
         // Calculate the required amount of tokens based on the current ratio
         uint tokenAmount = msg.value * token_reserves / eth_reserves;
 
         // Check if the caller has enough tokens
         uint tokenSupply = token.balanceOf(msg.sender);
         require(tokenAmount <= tokenSupply, "Insufficient token balance");
-
-        // Log the contract's ETH balance before receiving the new liquidity
-        uint contractBalanceBefore = address(this).balance;
 
         // Transfer tokens from the caller to the contract
         token.transferFrom(msg.sender, address(this), tokenAmount);
@@ -134,29 +138,43 @@ contract TokenExchange is Ownable {
         total_shares += newShares;
 
         // Record the new liquidity provider
-        lp_providers.push(msg.sender);
-
-        // Log the contract's ETH balance after receiving the new liquidity
-        uint contractBalanceAfter = address(this).balance;
-        require(contractBalanceAfter == contractBalanceBefore + msg.value, "ETH not transferred correctly");
+        if (lps[msg.sender] == newShares) lp_providers.push(msg.sender);
     }
 
     // Function removeLiquidity: Removes liquidity given the desired amount of ETH to remove.
     // You can change the inputs, or the scope of your function, as needed.
-    function removeLiquidity(uint amountETH)
+    function removeLiquidity(uint amountETH, uint max_exchange_rate, uint min_exchange_rate)
         public 
         payable
     {
         require(amountETH > 0, "ETH amount must be greater than 0");
+        
+        // Calculate the current exchange rate (tokens per ETH)
+        uint currentExchangeRate = (token_reserves * multiplier * 10**18) / eth_reserves;
+
+        // Ensure the current exchange rate is within the allowed range
+        require(currentExchangeRate <= max_exchange_rate, "Exchange rate exceeds the maximum allowed");
+        require(currentExchangeRate >= min_exchange_rate, "Exchange rate is below the minimum allowed");
+
         uint amountShare = total_shares * amountETH / eth_reserves;
         require(lps[msg.sender] >= amountShare, "Insufficient shares");
         require(amountETH < eth_reserves, "Cannot remove all the ETH reserves");
         uint amountToken = amountETH * token_reserves / eth_reserves;
-        require(eth_reserves - amountETH > 0 && token_reserves - amountToken > 0, "Pool depletion");
+        require(eth_reserves - amountETH >= 1 && token_reserves - amountToken >= 1, "Pool depletion");
+
+        // Cal fee reward
+        uint tokens_fee_rewards = amountShare * token_fee_reserves / total_shares;
+        uint eth_fee_rewards = amountShare * eth_fee_reserves / total_shares;
+
+        console.log("Remove liquidity: ", amountETH, amountToken);
+        console.log("Fee rewards: ", eth_fee_rewards, tokens_fee_rewards);
+        console.log(address(this).balance);
+        console.log(token.balanceOf(address(this)));
+
 
         // Transfer ETH and tokens to the caller
-        payable(msg.sender).transfer(amountETH);
-        token.transferFrom(address(this), msg.sender, amountToken);
+        payable(msg.sender).transfer(amountETH + eth_fee_rewards);
+        token.transfer( msg.sender, amountToken + tokens_fee_rewards);
 
         // Update reserves and shares
         eth_reserves -= amountETH;
@@ -168,15 +186,26 @@ contract TokenExchange is Ownable {
 
     // Function removeAllLiquidity: Removes all liquidity that msg.sender is entitled to withdraw
     // You can change the inputs, or the scope of your function, as needed.
-    function removeAllLiquidity()
+    function removeAllLiquidity(uint max_exchange_rate, uint min_exchange_rate)
         external
         payable
     {
+        // Calculate the current exchange rate (tokens per ETH)
+        uint currentExchangeRate = (token_reserves * multiplier * 10**18) / eth_reserves;
+
+        // Ensure the current exchange rate is within the allowed range
+        require(currentExchangeRate <= max_exchange_rate, "Exchange rate exceeds the maximum allowed");
+        require(currentExchangeRate >= min_exchange_rate, "Exchange rate is below the minimum allowed");
+
         uint shares = lps[msg.sender];
         require(shares > 0, "No liquidity available");
         uint amountETH = (shares * eth_reserves) / total_shares;
         uint amountTokens = (shares * token_reserves) / total_shares;
-        require(eth_reserves - amountETH > 0 && token_reserves - amountTokens > 0, "Pool depletion");
+        require(eth_reserves - amountETH >= 1 && token_reserves - amountTokens >= 1, "Pool depletion");
+
+        // Cal fee reward
+        uint tokens_fee_rewards = shares * token_fee_reserves / total_shares;
+        uint eth_fee_rewards = shares * eth_fee_reserves / total_shares;
 
         // Update reserves and shares
         eth_reserves -= amountETH;
@@ -186,8 +215,8 @@ contract TokenExchange is Ownable {
         lps[msg.sender] = 0;
 
         // Transfer ETH and tokens to the caller
-        payable(msg.sender).transfer(amountETH);
-        token.transfer(msg.sender, amountTokens);
+        payable(msg.sender).transfer(amountETH + eth_fee_rewards);
+        token.transfer(msg.sender, amountTokens + tokens_fee_rewards);
     }
     /***  Define additional functions for liquidity fees here as needed ***/
 
@@ -196,94 +225,57 @@ contract TokenExchange is Ownable {
 
     // Function swapTokensForETH: Swaps your token with ETH
     // You can change the inputs, or the scope of your function, as needed.
-    function swapTokensForETH(uint amountTokens)
+    function swapTokensForETH(uint amountTokens, uint max_exchange_rate)
         external 
         payable
-    {
-        /******* TODO: Implement this function *******/
+    {        
         require(amountTokens > 0, "Token amount must be greater than 0");
-        uint ethAmount = (eth_reserves * amountTokens) / (token_reserves + amountTokens);
-        require(eth_reserves - ethAmount >= 1, "Insufficient ETH in pool");
-
-        // Transfer tokens to the contract
+        require(amountTokens <= token.balanceOf(msg.sender), "Trader does not have enough tokens!");
+        
+        uint tokenFee = amountTokens * swap_fee_numerator / swap_fee_denominator;
+        uint swapTokens = amountTokens - tokenFee;
+        uint amountETH = (eth_reserves * swapTokens) / (token_reserves + swapTokens);
+        require(eth_reserves - amountETH >= 1, "Insufficient ETH in pool");
+        
+        // cal rate base on swapTokens or amountTokens???
+        uint actualExchangeRate = (amountTokens * multiplier) / amountETH;
+        require(actualExchangeRate <= max_exchange_rate, "Exchange rate exceeds the maximum");
+        
+        // swap token <-> eth
         token.transferFrom(msg.sender, address(this), amountTokens);
+        payable(msg.sender).transfer(amountETH);
 
         // Update reserves
-        eth_reserves -= ethAmount;
-        token_reserves += amountTokens;
-        k = eth_reserves * token_reserves;
+        eth_reserves -= amountETH;
+        token_reserves += swapTokens; 
 
-        // Transfer ETH to the caller
-        payable(msg.sender).transfer(ethAmount);
+        token_fee_reserves += tokenFee;
     }
-
-
 
     // Function swapETHForTokens: Swaps ETH for your tokens
     // ETH is sent to contract as msg.value
     // You can change the inputs, or the scope of your function, as needed.
-    function swapETHForTokens()
+    function swapETHForTokens(uint max_exchange_rate)
         external
         payable 
     {
-        /******* TODO: Implement this function *******/
         require(msg.value > 0, "ETH amount must be greater than 0");
-        uint tokenAmount = (token_reserves * msg.value) / (eth_reserves + msg.value);
-        require(token_reserves - tokenAmount >= 1, "Insufficient tokens in pool");
+        require(msg.sender.balance >= msg.value, "Trader does not have enough ETH");
+        
+        uint ethFee = msg.value * swap_fee_numerator / swap_fee_denominator;
+        uint swapEth = msg.value - ethFee;
+        uint amountTokens = (token_reserves * swapEth) / (eth_reserves + swapEth);
+        require(token_reserves - amountTokens >= 1, "Insufficient tokens in pool");
+
+        uint actualExchangeRate = (amountTokens * multiplier) / msg.value;
+        require(actualExchangeRate <= max_exchange_rate, "Exchange rate exceeds the maximum"); 
 
         // Update reserves
-        eth_reserves += msg.value;
-        token_reserves -= tokenAmount;
-        k = eth_reserves * token_reserves;
+        eth_reserves += swapEth;
+        token_reserves -= amountTokens;
+        eth_fee_reserves += ethFee;
 
         // Transfer tokens to the caller
-        token.transfer(msg.sender, tokenAmount);
+        token.transfer(msg.sender, amountTokens);
     }
 }
-
-// function swapTokensForETH(uint256 amountTokens) external payable {
-//         require(amountTokens > 0, "Amount must be greater than 0");
-//         require(token.balanceOf(msg.sender) >= amountTokens, "Insufficient token balance");
-
-//         // Calculate the amount of ETH to send
-//         uint256 amountETH = (amountTokens * ethReserves) / tokenReserves;
-
-//         // Ensure the pool is not drained to zero
-//         require(ethReserves - amountETH > 0, "Cannot drain ETH reserves");
-//         require(tokenReserves + amountTokens > 0, "Cannot drain token reserves");
-
-//         // Update reserves
-//         ethReserves -= amountETH;
-//         tokenReserves += amountTokens;
-
-//         // Transfer tokens from the user to the contract
-//         token.transferFrom(msg.sender, address(this), amountTokens);
-
-//         // Transfer ETH to the user
-//         payable(msg.sender).transfer(amountETH);
-
-//         emit TokensSwappedForETH(msg.sender, amountTokens, amountETH);
-//     }
-
-//     /**
-//      * @dev Swaps ETH for tokens.
-//      */
-//     function swapETHForTokens() external payable {
-//         require(msg.value > 0, "ETH amount must be greater than 0");
-
-//         // Calculate the amount of tokens to send
-//         uint256 amountTokens = (msg.value * tokenReserves) / ethReserves;
-
-//         // Ensure the pool is not drained to zero
-//         require(tokenReserves - amountTokens > 0, "Cannot drain token reserves");
-//         require(ethReserves + msg.value > 0, "Cannot drain ETH reserves");
-
-//         // Update reserves
-//         ethReserves += msg.value;
-//         tokenReserves -= amountTokens;
-
-//         // Transfer tokens to the user
-//         token.transfer(msg.sender, amountTokens);
-
-//         emit ETHSwappedForTokens(msg.sender, msg.value, amountTokens);
-//     }
