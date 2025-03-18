@@ -25,6 +25,9 @@ contract TokenExchange is Ownable {
 
     // For Extra Credit only: to loop through the keys of the lps mapping
     address[] private lp_providers;      
+    mapping(address => uint) private lps_eth_reward;
+    mapping(address => uint) private lps_token_reward;
+    mapping(address => uint) index_in_lp_providers;
 
     // Total Pool Shares
     uint private total_shares = 0;
@@ -71,6 +74,9 @@ contract TokenExchange is Ownable {
         total_shares = 10**5;
         // Pool creator has some low amount of shares to allow autograder to run
         lps[msg.sender] = 100;
+        index_in_lp_providers[msg.sender] = lp_providers.length;
+        lp_providers.push(msg.sender);
+        
     }
 
     // For use for ExtraCredit ONLY
@@ -79,6 +85,7 @@ contract TokenExchange is Ownable {
     function removeLP(uint index) private {
         require(index < lp_providers.length, "specified index is larger than the number of lps");
         lp_providers[index] = lp_providers[lp_providers.length - 1];
+        index_in_lp_providers[lp_providers[lp_providers.length - 1]] = index;
         lp_providers.pop();
     }
 
@@ -124,9 +131,6 @@ contract TokenExchange is Ownable {
         uint tokenSupply = token.balanceOf(msg.sender);
         require(tokenAmount <= tokenSupply, "Insufficient token balance");
 
-        // Transfer tokens from the caller to the contract
-        token.transferFrom(msg.sender, address(this), tokenAmount);
-
         // Update reserves and constant k
         eth_reserves += msg.value;
         token_reserves += tokenAmount;
@@ -136,9 +140,15 @@ contract TokenExchange is Ownable {
         uint newShares = (total_shares * msg.value) / eth_reserves;
         lps[msg.sender] += newShares;
         total_shares += newShares;
-
+        
         // Record the new liquidity provider
-        if (lps[msg.sender] == newShares) lp_providers.push(msg.sender);
+        if (lps[msg.sender] == newShares) {
+            index_in_lp_providers[msg.sender] = lp_providers.length;
+            lp_providers.push(msg.sender);
+        }
+
+        // Transfer tokens from the caller to the contract
+        token.transferFrom(msg.sender, address(this), tokenAmount);
     }
 
     // Function removeLiquidity: Removes liquidity given the desired amount of ETH to remove.
@@ -163,18 +173,10 @@ contract TokenExchange is Ownable {
         require(eth_reserves - amountETH >= 1 && token_reserves - amountToken >= 1, "Pool depletion");
 
         // Cal fee reward
-        uint tokens_fee_rewards = amountShare * token_fee_reserves / total_shares;
-        uint eth_fee_rewards = amountShare * eth_fee_reserves / total_shares;
-
-        console.log("Remove liquidity: ", amountETH, amountToken);
-        console.log("Fee rewards: ", eth_fee_rewards, tokens_fee_rewards);
-        console.log(address(this).balance);
-        console.log(token.balanceOf(address(this)));
-
-
-        // Transfer ETH and tokens to the caller
-        payable(msg.sender).transfer(amountETH + eth_fee_rewards);
-        token.transfer( msg.sender, amountToken + tokens_fee_rewards);
+        uint tokens_fee_rewards = lps_token_reward[msg.sender] * amountShare / lps[msg.sender];
+        // amountShare * token_fee_reserves / total_shares;
+        uint eth_fee_rewards = lps_eth_reward[msg.sender] * amountShare / lps[msg.sender];
+        // amountShare * eth_fee_reserves / total_shares;
 
         // Update reserves and shares
         eth_reserves -= amountETH;
@@ -182,6 +184,17 @@ contract TokenExchange is Ownable {
         k = eth_reserves * token_reserves;
         lps[msg.sender] -= amountShare;
         total_shares -= amountShare;
+
+        lps_token_reward[msg.sender] -= tokens_fee_rewards;
+        lps_eth_reward[msg.sender] -= eth_fee_rewards;
+        token_fee_reserves -= tokens_fee_rewards;
+        eth_fee_reserves -= eth_fee_rewards;
+
+        if (lps[msg.sender] == 0) removeLP(index_in_lp_providers[msg.sender]);
+
+        // Transfer ETH and tokens to the caller
+        payable(msg.sender).transfer(amountETH + eth_fee_rewards);
+        token.transfer( msg.sender, amountToken + tokens_fee_rewards);
     }
 
     // Function removeAllLiquidity: Removes all liquidity that msg.sender is entitled to withdraw
@@ -203,20 +216,27 @@ contract TokenExchange is Ownable {
         uint amountTokens = (shares * token_reserves) / total_shares;
         require(eth_reserves - amountETH >= 1 && token_reserves - amountTokens >= 1, "Pool depletion");
 
-        // Cal fee reward
-        uint tokens_fee_rewards = shares * token_fee_reserves / total_shares;
-        uint eth_fee_rewards = shares * eth_fee_reserves / total_shares;
-
+        // // Cal fee reward
+        // uint tokens_fee_rewards = shares * token_fee_reserves / total_shares;
+        // uint eth_fee_rewards = shares * eth_fee_reserves / total_shares;
+        
         // Update reserves and shares
         eth_reserves -= amountETH;
         token_reserves -= amountTokens;
         k = eth_reserves * token_reserves;
         total_shares -= shares;
+        eth_fee_reserves -= lps_eth_reward[msg.sender];
+        token_fee_reserves -= lps_token_reward[msg.sender];
+
         lps[msg.sender] = 0;
+        lps_eth_reward[msg.sender] = 0;
+        lps_token_reward[msg.sender] = 0;
+
+        removeLP(index_in_lp_providers[msg.sender]);
 
         // Transfer ETH and tokens to the caller
-        payable(msg.sender).transfer(amountETH + eth_fee_rewards);
-        token.transfer(msg.sender, amountTokens + tokens_fee_rewards);
+        payable(msg.sender).transfer(amountETH + lps_eth_reward[msg.sender]);
+        token.transfer(msg.sender, amountTokens + lps_token_reward[msg.sender]);
     }
     /***  Define additional functions for liquidity fees here as needed ***/
 
@@ -240,16 +260,20 @@ contract TokenExchange is Ownable {
         // cal rate base on swapTokens or amountTokens???
         uint actualExchangeRate = (amountTokens * multiplier) / amountETH;
         require(actualExchangeRate <= max_exchange_rate, "Exchange rate exceeds the maximum");
-        
-        // swap token <-> eth
-        token.transferFrom(msg.sender, address(this), amountTokens);
-        payable(msg.sender).transfer(amountETH);
 
         // Update reserves
         eth_reserves -= amountETH;
         token_reserves += swapTokens; 
 
         token_fee_reserves += tokenFee;
+
+        // distribute fee for LPs
+        for (uint i=0; i<lp_providers.length; i++) 
+            lps_token_reward[lp_providers[i]] += tokenFee * lps[lp_providers[i]] / total_shares;
+
+        // swap token <-> eth
+        token.transferFrom(msg.sender, address(this), amountTokens);
+        payable(msg.sender).transfer(amountETH);
     }
 
     // Function swapETHForTokens: Swaps ETH for your tokens
@@ -274,6 +298,11 @@ contract TokenExchange is Ownable {
         eth_reserves += swapEth;
         token_reserves -= amountTokens;
         eth_fee_reserves += ethFee;
+
+        // distribute fee for LPs
+        for (uint i=0; i<lp_providers.length; i++) {
+            lps_eth_reward[lp_providers[i]] += ethFee * lps[lp_providers[i]] / total_shares;
+        }
 
         // Transfer tokens to the caller
         token.transfer(msg.sender, amountTokens);

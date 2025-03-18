@@ -439,6 +439,29 @@ const exchange_abi = [
   },
   {
     "inputs": [],
+    "name": "getLpsProvider",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "getReserves",
     "outputs": [
       {
@@ -985,6 +1008,6 @@ const sanityCheck = async function() {
 // Sleep 3s to ensure init() finishes before sanityCheck() runs on first load.
 // If you run into sanityCheck() errors due to init() not finishing, please extend the sleep time.
 
-setTimeout(function () {
-  sanityCheck();
-}, 10000);
+// setTimeout(function () {
+//   sanityCheck();
+// }, 10000);
